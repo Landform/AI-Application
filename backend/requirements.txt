@@ -1,0 +1,9 @@
+# my-ai-log-viewer/backend/requirements.txt
+fastapi==0.104.1
+uvicorn==0.23.2
+sqlmodel==0.0.14
+psycopg2-binary==2.9.9
+python-dotenv==1.0.0
+transformers==4.35.2
+torch==2.0.1
+sentencepiece==0.1.99
