@@ -2,80 +2,60 @@
 from typing import List, Optional
 from fastapi import FastAPI, Depends, HTTPException, Query
 from sqlmodel import Session, select
+from pydantic import BaseModel
 from datetime import datetime
 from fastapi.middleware.cors import CORSMiddleware
 from transformers import pipeline
+import logging
 
-from .database import get_session, create_db_and_tables
+# Setup basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+from .database import get_session, create_db_and_tables, engine
 from .models import EmployeeSystemActivity
 
-# Init FastAPI app
 app = FastAPI(
     title="Employee Activity Log Viewer with AI Summary",
-    description="API for fetching and summarizing employee logs.",
     version="1.0.0"
 )
 
-# CORS configuration to allow frontend to communicate with backend
 origins = [
-    "http://localhost",       # For local access after compose up
-    "http://localhost:3001",  # Frontend mapped port
-    "http://frontend"         # Docker internal service name for frontend
+    "http://localhost", "http://localhost:3001", "http://localhost:3002",
+    "http://frontend", "http://127.0.0.1", "http://127.0.0.1:3001", "http://127.0.0.1:3002",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
-# Global summarizer pipeline (will be loaded once on startup)
 summarizer = None
 SUMMARY_MODEL_NAME = "sshleifer/distilbart-cnn-12-6"
 
 @app.on_event("startup")
 async def on_startup():
-    print("Application startup...")
-    # Verify database connection and create tables
+    logger.info("Application startup...")
     try:
-        with Session(get_session()):
-            print("Database connection successful!")
         create_db_and_tables()
-        print("Database tables created/checked successfully.")
+        logger.info("Database connection and table creation successful!")
     except Exception as e:
-        print(f"ERROR: Failed to connect to database or create tables on startup: {e}")
+        logger.error(f"ERROR: Failed to connect to database or create tables on startup: {e}")
         raise RuntimeError(f"Database setup failed: {e}")
 
-    # Load AI model
     global summarizer
     try:
-        print(f"Loading AI summarization model: {SUMMARY_MODEL_NAME}...")
+        logger.info(f"Loading AI summarization model: {SUMMARY_MODEL_NAME}...")
         summarizer = pipeline("summarization", model=SUMMARY_MODEL_NAME, tokenizer=SUMMARY_MODEL_NAME)
-        print("AI summarization model loaded successfully!")
+        logger.info("AI summarization model loaded successfully!")
     except Exception as e:
-        print(f"ERROR: Failed to load AI model on startup: {e}")
+        logger.error(f"ERROR: Failed to load AI model on startup: {e}")
         raise RuntimeError(f"AI model loading failed: {e}")
 
 
 @app.get("/logs/", response_model=List[EmployeeSystemActivity])
-async def get_employee_system_logs(
-    session: Session = Depends(get_session),
-    employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
-    start_date: Optional[datetime] = Query(None, description="Filter logs from this date (YYYY-MM-DDTHH:MM:SS)"),
-    end_date: Optional[datetime] = Query(None, description="Filter logs up to this date (YYYY-MM-DDTHH:MM:SS)"),
-    event_type: Optional[str] = Query(None, description="Filter by event type (e.g., 'keyboard', 'mouse_click', 'app_focus')"),
-    application_name: Optional[str] = Query(None, description="Filter by application name"),
-    limit: int = Query(100, ge=1, le=1000, description="Number of logs to return"),
-    offset: int = Query(0, ge=0, description="Offset for pagination"),
-    order_by_timestamp_desc: bool = Query(True, description="Order by timestamp descending (newest first)")
-):
-    """
-    Retrieve employee system activity logs with optional filters and pagination.
-    """
+async def get_employee_system_logs(session: Session = Depends(get_session), employee_id: Optional[str] = Query(None), start_date: Optional[datetime] = Query(None), end_date: Optional[datetime] = Query(None), event_type: Optional[str] = Query(None), application_name: Optional[str] = Query(None), limit: int = Query(100), offset: int = Query(0), order_by_timestamp_desc: bool = Query(True)):
     statement = select(EmployeeSystemActivity)
-
     if employee_id:
         statement = statement.where(EmployeeSystemActivity.employee_id == employee_id)
     if start_date:
@@ -86,73 +66,69 @@ async def get_employee_system_logs(
         statement = statement.where(EmployeeSystemActivity.event_type == event_type)
     if application_name:
         statement = statement.where(EmployeeSystemActivity.application_name.ilike(f"%{application_name}%"))
+    statement = statement.order_by(EmployeeSystemActivity.timestamp.desc() if order_by_timestamp_desc else EmployeeSystemActivity.timestamp.asc()).limit(limit).offset(offset)
+    logs = session.exec(statement).all()
+    return logs
+    
 
-    if order_by_timestamp_desc:
-        statement = statement.order_by(EmployeeSystemActivity.timestamp.desc())
-    else:
-        statement = statement.order_by(EmployeeSystemActivity.timestamp.asc())
-
-    statement = statement.limit(limit).offset(offset)
-
-    try:
-        logs = session.exec(statement).all()
-        return logs
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve logs: {e}")
+class SummarizeRequest(BaseModel):
+    log_ids: List[int]
 
 @app.post("/summarize_logs/")
 async def summarize_logs(
-    log_ids: List[int],
+    request: SummarizeRequest,
     session: Session = Depends(get_session)
 ):
-    """
-    Summarizes a selection of employee activity logs using AI.
-    """
-    if not summarizer:
-        raise HTTPException(status_code=503, detail="AI summarizer model is not loaded or ready.")
+    if not request.log_ids:
+        raise HTTPException(status_code=400, detail="No log IDs provided.")
 
-    if not log_ids:
-        raise HTTPException(status_code=400, detail="No log IDs provided for summarization.")
-
-    statement = select(EmployeeSystemActivity).where(EmployeeSystemActivity.id.in_(log_ids)).order_by(EmployeeSystemActivity.timestamp.asc())
-    try:
-        logs_to_summarize = session.exec(statement).all()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve logs for summarization: {e}")
+    statement = select(EmployeeSystemActivity).where(
+        EmployeeSystemActivity.id.in_(request.log_ids) # type: ignore
+    ).order_by(EmployeeSystemActivity.timestamp.asc())
+    
+    logs_to_summarize = session.exec(statement).all()
 
     if not logs_to_summarize:
         return {"summary": "No logs found for the given IDs."}
 
-    full_text_for_summary = []
-    current_employee = None
+    # --- NEW: Build a very simple, clean string for the AI ---
+    simple_actions = []
     for log in logs_to_summarize:
-        if not current_employee:
-            current_employee = log.employee_id
+        app = log.application_name or "an unknown application"
+        if log.event_type == "app_focus":
+            simple_actions.append(f"User focused on {app}.")
+        elif log.event_type == "mouse_click":
+            simple_actions.append(f"User clicked in {app}.")
+        elif log.event_type == "keyboard":
+            simple_actions.append(f"User typed in {app}.")
 
-        log_entry_desc = (
-            f"[{log.timestamp.strftime('%Y-%m-%d %H:%M:%S')}] "
-            f"{log.event_type} in '{log.application_name}' (Window: '{log.window_title}'). "
-            f"Details: '{log.event_detail or ''}'."
-        )
-        full_text_for_summary.append(log_entry_desc)
+    # Use a set to get unique actions, then join them. This prevents massive repetition.
+    unique_actions = list(dict.fromkeys(simple_actions))
+    text_input = " ".join(unique_actions)
+    # --- END OF NEW LOGIC ---
 
-    text_input = " ".join(full_text_for_summary)
+    if not text_input:
+        return {"summary": "No actions to summarize from the selected logs."}
 
-    MAX_INPUT_CHARS = 3000
-    if len(text_input) > MAX_INPUT_CHARS:
-        text_input = text_input[:MAX_INPUT_CHARS] + "..."
-        print(f"Warning: Input text for summarization truncated to {MAX_INPUT_CHARS} characters.")
+    # Log the exact text being sent to the AI
+    logger.info(f"--- Sending text to AI for summarization ---\n{text_input}\n-----------------------------------------")
 
     try:
-        summary_result = summarizer(text_input, min_length=50, max_length=200, do_sample=False)
+        # Use slightly different summarization parameters
+        summary_result = summarizer(text_input, min_length=15, max_length=100, truncation=True)
         summary_text = summary_result[0]['summary_text']
+
+        logger.info(f"--- AI generated summary ---\n{summary_text}\n-----------------------------------------")
+
         return {
-            "employee_id": current_employee,
+            "employee_id": logs_to_summarize[0].employee_id,
             "num_logs_summarized": len(logs_to_summarize),
             "summary": summary_text
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI summarization failed: {e}. Check backend logs for more details.")
+        logger.error(f"CRITICAL: AI summarization pipeline failed. Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="AI model failed to process the request.")
+
 
 @app.get("/health/")
 async def health_check():

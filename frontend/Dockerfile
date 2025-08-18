@@ -1,38 +1,33 @@
-# my-ai-log-viewer/frontend/Dockerfile
-# Stage 1: Build the React application
-FROM node:18-alpine AS build
+# my-ai-log-viewer/frontend/Dockerfile (FINAL VERSION WITH LOGGING FIX)
+
+# --- Stage 1: Build the React application ---
+# Use a Debian-based Node image for better compatibility
+FROM node:18-bullseye-slim AS build
 
 WORKDIR /app
-
-# Set the PATH to include node_modules/.bin first
 ENV PATH /app/node_modules/.bin:$PATH
-
-# Copy package.json and install dependencies
 COPY package*.json ./
 RUN npm install
-
-# Ensure executables have correct permissions
-RUN find /app/node_modules/.bin -type f -exec chmod +x {} \;
-
-# Copy the rest of the frontend code
 COPY . .
-
-# Build the React app using the standard npm command
 RUN npm run build
 
-# Stage 2: Serve the application with Nginx
+# --- Stage 2: Serve the application with Nginx ---
 FROM nginx:alpine
 
-# Remove default nginx config to avoid conflicts with our custom one
-RUN rm /etc/nginx/conf.d/default.conf
-
-# Copy the custom Nginx configuration
+# Copy the custom (now simplified) Nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
-# Copy the built React app into Nginx's public directory
+# Copy the built React app from the 'build' stage
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Expose port 80 - Nginx will listen on this port
-EXPOSE 80
+# --- NEW FIX ---
+# Symlink Nginx log files to Docker's standard output/error streams.
+# This is a more robust way to capture logs than using directives in nginx.conf.
+RUN ln -sf /dev/stdout /var/log/nginx/access.log \
+    && ln -sf /dev/stderr /var/log/nginx/error.log
 
+# We can also add back the chown command, as it's good practice even if it wasn't the root cause.
+RUN chown -R nginx:nginx /usr/share/nginx/html
+
+EXPOSE 80
 CMD ["nginx", "-g", "daemon off;"]

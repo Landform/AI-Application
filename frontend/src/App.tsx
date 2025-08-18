@@ -1,7 +1,7 @@
 // my-ai-log-viewer/frontend/src/App.tsx
 import React, { useState, useEffect, useCallback } from 'react';
-import { fetchLogs, summarizeLogs } from './api'; // fetchLogs and summarizeLogs are values (functions)
-import type { LogEntry } from './api/types'; // LogEntry is a type (interface)
+import { fetchLogs, summarizeLogs } from './api';
+import type { LogEntry } from './api/types';
 import LogTable from './components/LogTable';
 import './App.css';
 
@@ -11,7 +11,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [employeeIdFilter, setEmployeeIdFilter] = useState<string>('');
   const [startDateFilter, setStartDateFilter] = useState<string>('');
-  const [endDateFilter, setEndDateFilter] = useState<string>('');
+  const [endDateFilter, setEndDataFilter] = useState<string>(''); // Corrected variable name
   const [eventTypeFilter, setEventTypeFilter] = useState<string>('');
   const [applicationNameFilter, setApplicationNameFilter] = useState<string>('');
   const [limit, setLimit] = useState<number>(100);
@@ -48,11 +48,9 @@ function App() {
     }
   }, [employeeIdFilter, startDateFilter, endDateFilter, eventTypeFilter, applicationNameFilter, limit, offset, orderByDesc]);
 
-
   useEffect(() => {
     loadLogs();
   }, [loadLogs]);
-
 
   const handlePrevPage = () => {
     setOffset(prev => Math.max(0, prev - limit));
@@ -77,24 +75,34 @@ function App() {
   };
 
   const handleSummarize = async () => {
+    // 1. Clear all previous states immediately
+    setSummary('');
+    setSummaryError(null);
+    setSummarizing(true); // Set loading state to true
+
     if (selectedLogIds.size === 0) {
       setSummaryError("Please select at least one log entry to summarize.");
-      setSummary('');
+      setSummarizing(false); // Turn off loading state
       return;
     }
-
-    setSummarizing(true);
-    setSummaryError(null);
-    setSummary('');
 
     try {
       const idsToSummarize = Array.from(selectedLogIds);
       const result = await summarizeLogs(idsToSummarize);
-      setSummary(result.summary);
+
+      // 2. Check if the result and summary property exist before setting
+      if (result && result.summary) {
+        setSummary(result.summary);
+      } else {
+        // Handle cases where the backend response is successful but malformed
+        setSummaryError("Received a valid response from the server, but it contained no summary text.");
+      }
     } catch (e: any) {
-      setSummaryError(e.response?.data?.detail || e.message || "Failed to generate summary.");
-      console.error("Summarization error:", e);
+      // 3. Set a clear error message from the exception
+      setSummaryError(e.message || "An unknown error occurred during summarization.");
+      console.error("Summarization error caught in component:", e);
     } finally {
+      // 4. Always turn off the loading state when done
       setSummarizing(false);
     }
   };
@@ -134,7 +142,7 @@ function App() {
               type="datetime-local"
               id="endDate"
               value={endDateFilter}
-              onChange={(e) => setEndDateFilter(e.target.value)}
+              onChange={(e) => setEndDataFilter(e.target.value)} // Corrected variable name
               placeholder="e.g., 2023-01-31T23:59"
               style={inputStyle}
             />
@@ -150,15 +158,15 @@ function App() {
               style={inputStyle}
             />
           </div>
-            <div>
+          <div>
             <label htmlFor="applicationName" style={{ display: 'block', marginBottom: '5px' }}>Application Name:</label>
             <input
-                type="text"
-                id="applicationName"
-                value={applicationNameFilter}
-                onChange={(e) => setApplicationNameFilter(e.target.value)}
-                placeholder="e.g., chrome, vscode"
-                style={inputStyle}
+              type="text"
+              id="applicationName"
+              value={applicationNameFilter}
+              onChange={(e) => setApplicationNameFilter(e.target.value)}
+              placeholder="e.g., chrome, vscode"
+              style={inputStyle}
             />
           </div>
           <div>
