@@ -12,7 +12,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from .database import get_session, create_db_and_tables, engine
+from .database import get_session, create_db_and_tables
 from .models import EmployeeSystemActivity
 
 app = FastAPI(
@@ -20,18 +20,26 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# CORS configuration for your remote server
 origins = [
-    "http://localhost", "http://localhost:3001", "http://localhost:3002",
-    "http://frontend", "http://127.0.0.1", "http://127.0.0.1:3001", "http://127.0.0.1:3002",
+    "http://localhost:3002",         # Kept for potential local testing
+    "http://127.0.0.1:3002",       # Kept for potential local testing
+    "http://192.168.1.214",          # Your remote server's base IP
+    "http://192.168.1.214:3002",     # Your remote server's frontend port
+    "http://frontend",                 # For Docker internal communication
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 summarizer = None
-SUMMARY_MODEL_NAME = "sshleifer/distilbart-cnn-12-6"
+# Using the t5-small model for better instruction-following
+SUMMARY_MODEL_NAME = "t5-small"
 
 @app.on_event("startup")
 async def on_startup():
@@ -40,22 +48,36 @@ async def on_startup():
         create_db_and_tables()
         logger.info("Database connection and table creation successful!")
     except Exception as e:
-        logger.error(f"ERROR: Failed to connect to database or create tables on startup: {e}")
+        logger.error(f"ERROR: DB connection/creation failed: {e}")
         raise RuntimeError(f"Database setup failed: {e}")
 
     global summarizer
     try:
-        logger.info(f"Loading AI summarization model: {SUMMARY_MODEL_NAME}...")
+        logger.info(f"Loading AI model: {SUMMARY_MODEL_NAME}...")
         summarizer = pipeline("summarization", model=SUMMARY_MODEL_NAME, tokenizer=SUMMARY_MODEL_NAME)
-        logger.info("AI summarization model loaded successfully!")
+        logger.info("AI model loaded successfully!")
     except Exception as e:
-        logger.error(f"ERROR: Failed to load AI model on startup: {e}")
+        logger.error(f"ERROR: AI model loading failed: {e}", exc_info=True)
         raise RuntimeError(f"AI model loading failed: {e}")
 
-
+# --- CORRECTED /logs/ ENDPOINT WITH FULL FILTERING ---
 @app.get("/logs/", response_model=List[EmployeeSystemActivity])
-async def get_employee_system_logs(session: Session = Depends(get_session), employee_id: Optional[str] = Query(None), start_date: Optional[datetime] = Query(None), end_date: Optional[datetime] = Query(None), event_type: Optional[str] = Query(None), application_name: Optional[str] = Query(None), limit: int = Query(100), offset: int = Query(0), order_by_timestamp_desc: bool = Query(True)):
+async def get_employee_system_logs(
+    session: Session = Depends(get_session),
+    employee_id: Optional[str] = Query(None, description="Filter by employee ID"),
+    start_date: Optional[datetime] = Query(None, description="Filter logs from this date (YYYY-MM-DDTHH:MM:SS)"),
+    end_date: Optional[datetime] = Query(None, description="Filter logs up to this date (YYYY-MM-DDTHH:MM:SS)"),
+    event_type: Optional[str] = Query(None, description="Filter by event type"),
+    application_name: Optional[str] = Query(None, description="Filter by application name"),
+    limit: int = Query(100, ge=1, le=1000, description="Number of logs to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    order_by_timestamp_desc: bool = Query(True, description="Order by timestamp descending")
+):
+    """
+    Retrieve employee system activity logs with optional filters and pagination.
+    """
     statement = select(EmployeeSystemActivity)
+
     if employee_id:
         statement = statement.where(EmployeeSystemActivity.employee_id == employee_id)
     if start_date:
@@ -66,24 +88,34 @@ async def get_employee_system_logs(session: Session = Depends(get_session), empl
         statement = statement.where(EmployeeSystemActivity.event_type == event_type)
     if application_name:
         statement = statement.where(EmployeeSystemActivity.application_name.ilike(f"%{application_name}%"))
-    statement = statement.order_by(EmployeeSystemActivity.timestamp.desc() if order_by_timestamp_desc else EmployeeSystemActivity.timestamp.asc()).limit(limit).offset(offset)
+
+    if order_by_timestamp_desc:
+        statement = statement.order_by(EmployeeSystemActivity.timestamp.desc()) # type: ignore[attr-defined]
+    else:
+        statement = statement.order_by(EmployeeSystemActivity.timestamp.asc()) # type: ignore[attr-defined]
+
+    statement = statement.limit(limit).offset(offset)
+    
     logs = session.exec(statement).all()
     return logs
-    
 
+# Define a Pydantic model for the request body
 class SummarizeRequest(BaseModel):
     log_ids: List[int]
 
+# The intelligent summarization endpoint
 @app.post("/summarize_logs/")
 async def summarize_logs(
     request: SummarizeRequest,
     session: Session = Depends(get_session)
 ):
+    if not summarizer:
+        raise HTTPException(status_code=503, detail="AI summarizer model is not loaded or ready.")
     if not request.log_ids:
         raise HTTPException(status_code=400, detail="No log IDs provided.")
 
     statement = select(EmployeeSystemActivity).where(
-        EmployeeSystemActivity.id.in_(request.log_ids) # type: ignore
+        EmployeeSystemActivity.id.in_(request.log_ids)  # type: ignore[attr-defined]
     ).order_by(EmployeeSystemActivity.timestamp.asc())
     
     logs_to_summarize = session.exec(statement).all()
@@ -91,35 +123,45 @@ async def summarize_logs(
     if not logs_to_summarize:
         return {"summary": "No logs found for the given IDs."}
 
-    # --- NEW: Build a very simple, clean string for the AI ---
-    simple_actions = []
+    # Build a narrative from the logs for the AI
+    narrative_points = []
+    last_window_title = None
+    activity_in_window = set()
+
     for log in logs_to_summarize:
-        app = log.application_name or "an unknown application"
-        if log.event_type == "app_focus":
-            simple_actions.append(f"User focused on {app}.")
+        if log.window_title != last_window_title and last_window_title is not None:
+            if activity_in_window:
+                actions = " and ".join(sorted(list(activity_in_window)))
+                point = f"In the window titled '{last_window_title}', the user was {actions}."
+                narrative_points.append(point)
+            activity_in_window.clear()
+
+        if log.event_type == "keyboard":
+            activity_in_window.add("typing")
         elif log.event_type == "mouse_click":
-            simple_actions.append(f"User clicked in {app}.")
-        elif log.event_type == "keyboard":
-            simple_actions.append(f"User typed in {app}.")
+            activity_in_window.add("clicking")
+        
+        last_window_title = log.window_title
 
-    # Use a set to get unique actions, then join them. This prevents massive repetition.
-    unique_actions = list(dict.fromkeys(simple_actions))
-    text_input = " ".join(unique_actions)
-    # --- END OF NEW LOGIC ---
+    if activity_in_window and last_window_title:
+        actions = " and ".join(sorted(list(activity_in_window)))
+        point = f"Finally, in the window titled '{last_window_title}', the user was {actions}."
+        narrative_points.append(point)
 
-    if not text_input:
-        return {"summary": "No actions to summarize from the selected logs."}
+    if not narrative_points:
+        return {"summary": "Not enough context from selected logs to generate a summary."}
 
-    # Log the exact text being sent to the AI
-    logger.info(f"--- Sending text to AI for summarization ---\n{text_input}\n-----------------------------------------")
-
+    # Use prompt engineering for the T5 model
+    prompt = "summarize: " + " ".join(narrative_points)
+    
+    logger.info(f"--- Sending text to AI ---\n{prompt}\n---------------------------")
+    
     try:
-        # Use slightly different summarization parameters
-        summary_result = summarizer(text_input, min_length=15, max_length=100, truncation=True)
+        summary_result = summarizer(prompt, min_length=15, max_length=100, truncation=True)
         summary_text = summary_result[0]['summary_text']
-
-        logger.info(f"--- AI generated summary ---\n{summary_text}\n-----------------------------------------")
-
+        
+        logger.info(f"--- AI generated summary ---\n{summary_text}\n--------------------------")
+        
         return {
             "employee_id": logs_to_summarize[0].employee_id,
             "num_logs_summarized": len(logs_to_summarize),
