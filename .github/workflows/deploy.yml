@@ -2,40 +2,32 @@
 
 name: Deploy to Production Server
 
-# This section defines the trigger for the workflow.
 on:
-  # Trigger on a `push` event.
   push:
-    # Only for pushes to the `main` branch.
     branches:
       - main
 
-# This section defines the jobs to be run.
 jobs:
   deploy:
-    # Run this job on a GitHub-hosted Ubuntu runner.
     runs-on: ubuntu-latest
 
-    # These are the steps the job will execute.
     steps:
-      # Step 1: Check out the repository's code.
-      - name: Checkout code
-        uses: actions/checkout@v3
+      # Step 1: Checkout code is not needed for this deployment method,
+      # as we will be pulling the code directly on the server.
 
-      # Step 2: Set up the SSH agent with our private key secret.
-      - name: Setup SSH
-        uses: webfactory/ssh-agent@v0.5.4
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
-      # Step 3: Deploy the application by running commands on the remote server.
+      # Step 2: Execute deployment commands on the remote server via SSH
       - name: Deploy to Server
-        run: |
-          # Execute the deployment commands on the remote server via SSH.
-          # The '-o StrictHostKeyChecking=no' option prevents interactive prompts about trusting the server's key.
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
-            # --- The following commands are now running on your remote server ---
-            
+        # Use the popular and robust appleboy/ssh-action
+        uses: appleboy/ssh-action@master
+        with:
+          # Get connection details from GitHub Secrets
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22 # Default SSH port, change if yours is different
+          
+          # The script of commands to run on the remote server
+          script: |
             echo "--- Navigating to project directory ---"
             cd /opt/my-ai-log-viewer
 
@@ -44,7 +36,7 @@ jobs:
 
             echo "--- Stopping old containers and cleaning up ---"
             sudo docker compose down
-            # Use '|| true' so the command doesn't fail if the volume doesn't exist on the first run.
+            # Use '|| true' so the command doesn't fail if the volume doesn't exist
             sudo docker volume rm my-ai-log-viewer_ai_log_db_data || true
 
             echo "--- Building and launching new containers ---"
@@ -54,4 +46,3 @@ jobs:
             sudo docker image prune -f
 
             echo "--- Deployment complete! ---"
-          EOF
