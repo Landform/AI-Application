@@ -1,32 +1,37 @@
-// my-ai-log-viewer/frontend/src/api/types.ts
-
-// Interface for log entries fetched from the backend
+// frontend/src/api/types.ts
 export interface LogEntry {
   id: number;
   employee_id: string;
-  timestamp: string; // ISO string
+  timestamp: string;
   event_type: string;
   application_name?: string;
   window_title?: string;
   event_detail?: string;
-  screenshot_path?: string;
 }
 
-// Interface for options when fetching logs
 export interface FetchLogsOptions {
   employeeId?: string;
-  startDate?: string;
-  endDate?: string;
   eventType?: string;
   applicationName?: string;
+  startDate?: string; // ADDED BACK
+  endDate?: string;   // ADDED BACK
   limit?: number;
   offset?: number;
   orderByTimestampDesc?: boolean;
 }
 
-// Interface for the AI summarization response
 export interface SummarizeResponse {
-  employee_id: string;
-  num_logs_summarized: number;
   summary: string;
+}
+
+export interface OvertimeDataPoint {
+  category: string;
+  execution_events: number;
+  communication_events: number;
+}
+
+export interface HeatmapDataPoint {
+  day: string;
+  hour: number;
+  focus_score: number;
 }
