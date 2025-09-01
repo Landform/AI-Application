@@ -42,7 +42,10 @@ function App() {
         limit,
         offset,
         orderByTimestampDesc: orderByDesc,
-      });
+    };
+
+    try {
+      const fetchedLogs = await fetchLogs(filterOptions);
       setLogs(fetchedLogs);
     } catch (e) {
       setError("Failed to fetch logs.");
@@ -50,11 +53,15 @@ function App() {
       setLoading(false);
     }
   };
+  };
 
   // Re-fetches data when pagination (offset) changes.
   // Filtering is manual via the "Apply Filters" button.
   useEffect(() => {
     loadLogs();
+  }, [offset]);
+
+  // --- Summarization Logic ---
   }, [offset]);
 
   const handleSummarize = async () => {

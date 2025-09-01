@@ -18,6 +18,7 @@ export const fetchLogs = async (options: FetchLogsOptions = {}): Promise<LogEntr
     };
     const response = await axios.get<LogEntry[]>(`${API_BASE_URL}/logs/`, { params });
     return response.data;
+
   } catch (error) {
     console.error("Error fetching logs:", error);
     throw error;

@@ -1,0 +1,48 @@
+# .github/workflows/deploy.yml
+
+name: Deploy to Production Server
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout code is not needed for this deployment method,
+      # as we will be pulling the code directly on the server.
+
+      # Step 2: Execute deployment commands on the remote server via SSH
+      - name: Deploy to Server
+        # Use the popular and robust appleboy/ssh-action
+        uses: appleboy/ssh-action@master
+        with:
+          # Get connection details from GitHub Secrets
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22 # Default SSH port, change if yours is different
+          
+          # The script of commands to run on the remote server
+          script: |
+            echo "--- Navigating to project directory ---"
+            cd /opt/my-ai-log-viewer
+
+            echo "--- Pulling latest changes from GitHub ---"
+            git pull origin main
+
+            echo "--- Stopping old containers and cleaning up ---"
+            sudo docker compose down
+            # Use '|| true' so the command doesn't fail if the volume doesn't exist
+            sudo docker volume rm my-ai-log-viewer_ai_log_db_data || true
+
+            echo "--- Building and launching new containers ---"
+            sudo docker compose up -d --build
+
+            echo "--- Pruning old Docker images to save space ---"
+            sudo docker image prune -f
+
+            echo "--- Deployment complete! ---"

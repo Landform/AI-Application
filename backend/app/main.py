@@ -14,6 +14,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from .database import get_session, create_db_and_tables
+from .database import get_session, create_db_and_tables
 from .models import EmployeeSystemActivity
 
 app = FastAPI(
@@ -52,7 +53,9 @@ async def on_startup():
     global summarizer
     try:
         logger.info(f"Loading AI model: {SUMMARY_MODEL_NAME}...")
+        logger.info(f"Loading AI model: {SUMMARY_MODEL_NAME}...")
         summarizer = pipeline("summarization", model=SUMMARY_MODEL_NAME, tokenizer=SUMMARY_MODEL_NAME)
+        logger.info("AI model loaded successfully!")
         logger.info("AI model loaded successfully!")
     except Exception as e:
         logger.error(f"ERROR: AI model loading failed: {e}", exc_info=True)
@@ -69,6 +72,7 @@ async def get_employee_system_logs(
     order_by_timestamp_desc: bool = Query(True)
 ):
     statement = select(EmployeeSystemActivity)
+
     if employee_id:
         statement = statement.where(EmployeeSystemActivity.employee_id == employee_id)
     if event_type:
